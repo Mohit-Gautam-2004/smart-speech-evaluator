@@ -1,10 +1,10 @@
 """
 This example demonstrates how to use `NN` model ( any ML model in general) from
-`speechemotionrecognition` package
+`speech_emotion_recognition` package
 """
 from common import extract_data
-from speechemotionrecognition.mlmodel import NN
-from speechemotionrecognition.utilities import get_feature_vector_from_mfcc
+from speech_emotion_recognition.mlmodel import NN
+from speech_emotion_recognition.utilities import get_feature_vector_from_mfcc
 
 
 def ml_example():

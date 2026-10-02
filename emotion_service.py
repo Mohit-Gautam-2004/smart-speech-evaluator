@@ -13,7 +13,7 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from infer import LABELS, load_model, predict_emotion, resolve_weights_path
-from speechemotionrecognition.utilities import get_feature_vector_from_mfcc
+from speech_emotion_recognition.utilities import get_feature_vector_from_mfcc
 
 
 app = Flask(__name__)

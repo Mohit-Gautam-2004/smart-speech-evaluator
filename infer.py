@@ -12,8 +12,8 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-from speechemotionrecognition.dnn import CNN, LSTM
-from speechemotionrecognition.utilities import get_feature_vector_from_mfcc
+from speech_emotion_recognition.dnn import CNN, LSTM
+from speech_emotion_recognition.utilities import get_feature_vector_from_mfcc
 
 
 LABELS: Tuple[str, ...] = ("Neutral", "Angry", "Happy", "Sad")

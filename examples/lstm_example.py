@@ -1,13 +1,13 @@
 """
 This example demonstrates how to use `LSTM` model from
-`speechemotionrecognition` package
+`speech_emotion_recognition` package
 """
 
 from keras.src.utils import to_categorical
 
 from common import extract_data
-from speechemotionrecognition.dnn import LSTM
-from speechemotionrecognition.utilities import get_feature_vector_from_mfcc
+from speech_emotion_recognition.dnn import LSTM
+from speech_emotion_recognition.utilities import get_feature_vector_from_mfcc
 
 
 def lstm_example():
