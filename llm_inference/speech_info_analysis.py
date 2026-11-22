@@ -78,6 +78,60 @@ def load_embedding_model():
     return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 
+@st.cache_resource
+def load_wav2vec2_emotion_model():
+    """Load pre-trained Wav2Vec 2.0 speech emotion recognition model."""
+    from transformers import AutoFeatureExtractor, AutoModelForAudioClassification, pipeline
+
+    try:
+        fe = AutoFeatureExtractor.from_pretrained("superb/wav2vec2-base-superb-er", local_files_only=True)
+        m = AutoModelForAudioClassification.from_pretrained("superb/wav2vec2-base-superb-er", local_files_only=True)
+    except Exception:
+        fe = AutoFeatureExtractor.from_pretrained("superb/wav2vec2-base-superb-er")
+        m = AutoModelForAudioClassification.from_pretrained("superb/wav2vec2-base-superb-er")
+
+    device_idx = 0 if torch.cuda.is_available() else -1
+    return pipeline(
+        task="audio-classification",
+        model=m,
+        feature_extractor=fe,
+        device=device_idx,
+    )
+
+
+def predict_emotion_wav2vec2_local(audio_path: Path) -> dict[str, Any]:
+    """In-process Wav2Vec 2.0 inference fallback if emotion backend is not reachable."""
+    import librosa
+
+    audio_data, sample_rate = sf.read(str(audio_path), dtype="float32")
+    if audio_data.ndim > 1:
+        audio_data = audio_data.mean(axis=1)
+    if sample_rate != 16000:
+        audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
+        sample_rate = 16000
+
+    classifier = load_wav2vec2_emotion_model()
+    raw_results = classifier({"array": audio_data, "sampling_rate": sample_rate})
+
+    label_map = {"neu": "Neutral", "hap": "Happy", "ang": "Angry", "sad": "Sad"}
+    prob_map = {"Neutral": 0.0, "Angry": 0.0, "Happy": 0.0, "Sad": 0.0}
+    for item in raw_results:
+        key = label_map.get(item["label"], item["label"])
+        if key in prob_map:
+            prob_map[key] = float(item["score"])
+
+    top_label = max(prob_map.items(), key=lambda x: x[1])[0]
+    labels_order = ["Neutral", "Angry", "Happy", "Sad"]
+    return {
+        "emotion_index": labels_order.index(top_label),
+        "emotion_label": top_label,
+        "confidence": prob_map[top_label],
+        "probabilities": prob_map,
+        "model": "wav2vec2 (transformer)",
+        "audio_file": str(audio_path),
+    }
+
+
 # ==========================================================
 # Helpers
 # ==========================================================
@@ -258,25 +312,27 @@ def get_wav_for_emotion(audio_path: Path) -> Path:
 
 def call_emotion_service(
     audio_path: Path,
-    model_name: str = "cnn",
+    model_name: str = "wav2vec2",
     timeout_sec: int = 60,
 ) -> dict[str, Any]:
-    payload = {"audio_path": str(audio_path)}
-    params = {"model": model_name, "mfcc_len": "39"}
-    response = requests.post(
-        f"{EMOTION_SERVICE_URL.rstrip('/')}/predict",
-        json=payload,
-        params=params,
-        timeout=timeout_sec,
-    )
-    if response.status_code != 200:
-        try:
-            error_payload = response.json()
-            message = error_payload.get("error", response.text)
-        except Exception:
-            message = response.text
-        raise RuntimeError(f"Emotion backend error ({response.status_code}): {message}")
-    return response.json()
+    try:
+        payload = {"audio_path": str(audio_path)}
+        params = {"model": model_name, "mfcc_len": "39"}
+        response = requests.post(
+            f"{EMOTION_SERVICE_URL.rstrip('/')}/predict",
+            json=payload,
+            params=params,
+            timeout=timeout_sec,
+        )
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+
+    # Fall back to in-process Wav2Vec 2.0 pipeline if backend is unavailable or wav2vec2 is requested
+    if model_name == "wav2vec2":
+        return predict_emotion_wav2vec2_local(audio_path)
+    raise RuntimeError(f"Emotion backend at {EMOTION_SERVICE_URL} is unreachable for model '{model_name}'.")
 
 
 def tone_score_from_result(predicted_tone: str, confidence: float, expected_tone: str) -> int:
@@ -364,13 +420,28 @@ Rules:
     return extract_json_from_response(response)
 
 
+DEFAULT_EXPECTED_CONTENT = (
+    "Good morning everyone. Today I want to talk about the importance of artificial intelligence "
+    "in education. AI makes learning more personalized, accessible, and efficient. However, technology "
+    "should support teachers rather than replace them. Thank you for listening."
+)
+
+DEFAULT_KNOWLEDGE_TEXT = (
+    "Artificial Intelligence is transforming education through personalized learning, automated assessments, "
+    "and intelligent tutoring systems. It helps students understand difficult concepts at their own pace and "
+    "provides instant feedback. However, AI should complement human teachers, protect student privacy, and "
+    "ensure equal access to education."
+)
+
+
 def initialize_state() -> None:
     defaults = {
         "current_step": 1,
-        "expected_content": "",
-        "expected_tone": "Any",
+        "expected_content": DEFAULT_EXPECTED_CONTENT,
+        "expected_tone": "Neutral",
+        "emotion_model": "wav2vec2",
         "knowledge_source_mode": "Paste text",
-        "knowledge_text": "",
+        "knowledge_text": DEFAULT_KNOWLEDGE_TEXT,
         "saved_path": None,
         "transcript": "",
         "chunks": [],
@@ -401,6 +472,7 @@ def reset_all() -> None:
         "current_step",
         "expected_content",
         "expected_tone",
+        "emotion_model",
         "knowledge_source_mode",
         "knowledge_text",
         "saved_path",
@@ -414,15 +486,21 @@ def reset_all() -> None:
         if key == "current_step":
             st.session_state[key] = 1
         elif key == "expected_tone":
-            st.session_state[key] = "Any"
+            st.session_state[key] = "Neutral"
+        elif key == "emotion_model":
+            st.session_state[key] = "wav2vec2"
         elif key == "knowledge_source_mode":
             st.session_state[key] = "Paste text"
-        elif key == "chunks":
+        elif key == "expected_content":
+            st.session_state[key] = DEFAULT_EXPECTED_CONTENT
+        elif key == "knowledge_text":
+            st.session_state[key] = DEFAULT_KNOWLEDGE_TEXT
+        elif key in ["chunks", "retrieved_passages"]:
             st.session_state[key] = []
-        elif key == "retrieved_passages":
-            st.session_state[key] = []
+        elif key == "transcript":
+            st.session_state[key] = ""
         else:
-            st.session_state[key] = "" if key in ["expected_content", "knowledge_text", "transcript"] else None
+            st.session_state[key] = None
 
 
 # ==========================================================
@@ -460,6 +538,18 @@ if st.session_state.current_step == 1:
         index=tone_index,
     )
 
+    model_labels = ["Wav2Vec 2.0 (Transformer - Recommended)", "CNN (Legacy)", "LSTM (Legacy)"]
+    model_values = ["wav2vec2", "cnn", "lstm"]
+    saved_model = st.session_state.get("emotion_model", "wav2vec2")
+    model_idx = model_values.index(saved_model) if saved_model in model_values else 0
+    selected_model_label = st.selectbox(
+        "Tone / Emotion recognition model",
+        options=model_labels,
+        index=model_idx,
+        help="Wav2Vec 2.0 uses deep contextual audio features to accurately detect emotions without false anger spikes.",
+    )
+    selected_model_value = model_values[model_labels.index(selected_model_label)]
+
     source_mode = st.radio(
         "Knowledge base source for RAG",
         options=["Paste text", "Upload file (.txt, .md, .csv)"],
@@ -491,6 +581,7 @@ if st.session_state.current_step == 1:
             else:
                 st.session_state.expected_content = expected_input.strip()
                 st.session_state.expected_tone = expected_tone_input
+                st.session_state.emotion_model = selected_model_value
                 st.session_state.knowledge_text = kb_text.strip()
                 st.session_state.knowledge_source_mode = "Paste text" if source_mode == "Paste text" else "Upload file"
                 reset_after_reference_change()
@@ -644,7 +735,8 @@ elif st.session_state.current_step == 5:
                     retrieved=st.session_state.retrieved_passages,
                 )
                 wav_path = get_wav_for_emotion(Path(st.session_state.saved_path))
-                st.session_state.emotion_result = call_emotion_service(wav_path, model_name="cnn")
+                selected_model = st.session_state.get("emotion_model", "wav2vec2")
+                st.session_state.emotion_result = call_emotion_service(wav_path, model_name=selected_model)
                 status.update(label="Detailed scoring completed.", state="complete")
             except Exception as exc:
                 status.update(label="One or more scoring components failed. Running robust fallback.", state="error")
@@ -680,7 +772,9 @@ elif st.session_state.current_step == 5:
         st.metric("Overall", f"{overall}/100")
         st.progress(max(0.0, min(1.0, overall / 100.0)))
 
-        st.markdown("### Tone Recognition (Flask Backend)")
+        st.markdown("### Tone Recognition")
+        model_used = emotion.get("model", st.session_state.get("emotion_model", "wav2vec2"))
+        st.caption(f"Evaluated with: {model_used}")
         st.metric("Predicted Tone", predicted_tone)
         st.metric("Tone Confidence", f"{tone_confidence:.2f}")
         st.metric("Tone Score", f"{tone_score}/100")

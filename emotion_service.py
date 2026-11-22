@@ -1,7 +1,7 @@
 """Flask backend for speech emotion (tone) recognition.
 
-Runs inference using the same CNN/LSTM pipeline used by infer.py and exposes
-an HTTP API for Streamlit integration.
+Runs inference using pre-trained Wav2Vec 2.0 (recommended) or legacy CNN/LSTM
+and exposes an HTTP API for Streamlit integration.
 """
 
 from __future__ import annotations
@@ -11,12 +11,35 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
+import numpy as np
 
 from infer import LABELS, load_model, predict_emotion, resolve_weights_path
 from speech_emotion_recognition.utilities import get_feature_vector_from_mfcc
 
 
 app = Flask(__name__)
+
+WAV2VEC2_LABEL_MAP: dict[str, str] = {
+    "neu": "Neutral",
+    "hap": "Happy",
+    "ang": "Angry",
+    "sad": "Sad",
+}
+
+
+@lru_cache(maxsize=1)
+def _load_wav2vec2_pipeline():
+    """Load and cache pre-trained Wav2Vec 2.0 audio classification pipeline."""
+    from transformers import AutoFeatureExtractor, AutoModelForAudioClassification, pipeline
+
+    try:
+        fe = AutoFeatureExtractor.from_pretrained("superb/wav2vec2-base-superb-er", local_files_only=True)
+        m = AutoModelForAudioClassification.from_pretrained("superb/wav2vec2-base-superb-er", local_files_only=True)
+    except Exception:
+        fe = AutoFeatureExtractor.from_pretrained("superb/wav2vec2-base-superb-er")
+        m = AutoModelForAudioClassification.from_pretrained("superb/wav2vec2-base-superb-er")
+
+    return pipeline("audio-classification", model=m, feature_extractor=fe)
 
 
 @lru_cache(maxsize=16)
@@ -40,6 +63,44 @@ def _predict_from_wav(
 
     if not audio_file.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_file}")
+
+    if model_name == "wav2vec2":
+        import scipy.io.wavfile as wav
+        from scipy.signal import resample
+
+        fs, signal = wav.read(str(audio_file))
+        if signal.ndim > 1:
+            signal = signal.mean(axis=1)
+        if signal.dtype != np.float32:
+            signal = signal.astype(np.float32) / 32768.0
+
+        # Resample to 16,000 Hz if needed
+        if fs != 16000 and len(signal) > 0:
+            target_len = int(len(signal) * 16000 / fs)
+            signal = resample(signal, target_len).astype(np.float32)
+            fs = 16000
+
+        classifier = _load_wav2vec2_pipeline()
+        raw_predictions = classifier({"array": signal, "sampling_rate": fs})
+
+        prob_map = {label: 0.0 for label in LABELS}
+        for item in raw_predictions:
+            mapped_lbl = WAV2VEC2_LABEL_MAP.get(item["label"], item["label"])
+            if mapped_lbl in prob_map:
+                prob_map[mapped_lbl] = float(item["score"])
+
+        predicted_label = max(prob_map.items(), key=lambda x: x[1])[0]
+        predicted_index = LABELS.index(predicted_label)
+        confidence = prob_map[predicted_label]
+
+        return {
+            "emotion_index": int(predicted_index),
+            "emotion_label": predicted_label,
+            "confidence": float(confidence),
+            "probabilities": prob_map,
+            "model": "wav2vec2",
+            "audio_file": str(audio_file),
+        }
 
     sample = get_feature_vector_from_mfcc(str(audio_file), flatten=False, mfcc_len=mfcc_len)
     weights_path = resolve_weights_path(model_name, weights_override)
@@ -77,7 +138,7 @@ def index() -> tuple[Any, int]:
             "/health": "Health check (GET)",
             "/predict": "Emotion inference from WAV audio (POST)"
         },
-        "supported_models": ["cnn", "lstm"],
+        "supported_models": ["wav2vec2", "cnn", "lstm"],
         "labels": ["Neutral", "Angry", "Happy", "Sad"]
     }), 200
 
@@ -96,9 +157,9 @@ def predict() -> tuple[Any, int]:
     2) application/json with {"audio_path": "..."}
     """
     try:
-        model_name = request.form.get("model") or request.args.get("model") or "cnn"
-        if model_name not in ("cnn", "lstm"):
-            return jsonify({"error": "model must be one of: cnn, lstm"}), 400
+        model_name = request.form.get("model") or request.args.get("model") or "wav2vec2"
+        if model_name not in ("wav2vec2", "cnn", "lstm"):
+            return jsonify({"error": "model must be one of: wav2vec2, cnn, lstm"}), 400
 
         mfcc_raw = request.form.get("mfcc_len") or request.args.get("mfcc_len") or "39"
         try:
@@ -139,3 +200,4 @@ def predict() -> tuple[Any, int]:
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5001, debug=False)
+
