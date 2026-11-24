@@ -6,7 +6,7 @@ Smart Speak is an innovative application designed to analyze and evaluate speech
 1. **Clone the Repository**: Start by cloning the Smart Speak repository to your local machine.
 
    ```bash
-   git clone https://github.com/NinadGawali/Smart_Speak
+   git clone https://github.com/Mohit-Gautam-2004/smart-speech-evaluator
    ```
 2. **Navigate to the Project Directory**: Change your current directory to the Smart Speak project folder.
 
@@ -38,11 +38,20 @@ Smart Speak is an innovative application designed to analyze and evaluate speech
     ```
    By default this runs on `http://127.0.0.1:5001`.
 
-8. **Optional Backend URL Override**: If needed, set `EMOTION_SERVICE_URL` in `.env`.
+8. **MongoDB Persistence (Attempts & Reference Library)**: Add your MongoDB Atlas connection string in `.env`:
+   ```
+   MONGODB_URI = "mongodb+srv://<username>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority"
+   MONGODB_DB_NAME = "smart_speak"
+   ```
+   This activates:
+   - **Personal Reference Library:** Save and load reusable topics/knowledge bases in Step 1.
+   - **Progress Tracking & Score Deltas:** Tracks multiple speech practice runs per topic and displays improvement deltas (e.g. `+14% Clarity vs Attempt 1`) along with historical attempt charts in Step 5.
+
+9. **Optional Backend URL Override**: If needed, set `EMOTION_SERVICE_URL` in `.env`.
    ```
    EMOTION_SERVICE_URL = "http://127.0.0.1:5001"
    ```
-9. **Access the App**: Open your web browser and navigate to `http://localhost:8501` to access the Smart Speak application.
+10. **Access the App**: Open your web browser and navigate to `http://localhost:8501` to access the Smart Speak application.
 
 ## Notes
 - Ensure you have the necessary API keys and permissions to use any external services integrated into the application.
